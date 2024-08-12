@@ -1,0 +1,367 @@
+---
+title: "01_formatting-data"
+author: "Dave"
+format: html
+editor: visual
+---
+
+## Libraries
+
+```{r libraries}
+library(fs)
+library(here)
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+library(carutools)
+```
+
+## Read data
+
+```{r read}
+split <- readRDS(here("data", "scotland_com-data-split.RDS"))
+
+## Need to coerce to a simple list, rather than a list_of - the
+## constraints of the latter prevent serious manipulation here
+split <- as.list(split)
+
+cat(names(split), sep = "\t")
+
+split <- 
+  map(split,
+    \(x){
+      filter(x, com != "kildare")
+    })
+```
+
+## Format data
+
+### age
+
+Okay let's not use single-year age - the total population counts are out by as much as \~75%!
+
+#### Format five year age data
+
+```{r five_year_age_to_factor}
+
+age_reorder <- \(x){
+  ordered(x) |> 
+  fct_reorder(as.numeric(str_extract(x, "\\d+")))
+}
+
+split[["age-five-year"]] <- mutate(split[["age-five-year"]], category = age_reorder(category))
+```
+
+#### Choose breaks
+
+```{r age_five_year_breaks}
+
+breaks <- c(0, 10, 20, 30, 45, 60, 70)
+
+break_make <-
+  split[["age-five-year"]] |> 
+  summarise(.by = category) |> 
+  arrange(category)
+
+break_make <- 
+  mutate(break_make,
+         nums = str_extract_all(category, "\\d+")) |> 
+  unnest(nums) |> 
+  
+  group_by(category) |> 
+  summarise(
+    lower = min(nums),
+    upper = max(nums)) |> 
+  
+  ungroup() |>
+  mutate(across(c(lower, upper), as.numeric)) |> 
+  mutate(lower = replace(lower, upper == 4, 0),
+         upper = replace(upper, lower == 85, Inf))
+
+break_make
+
+break_make <- 
+  mutate(break_make, this_break = breaks[match(lower, breaks)]) |> 
+  fill(this_break)
+
+break_levels <-
+  str_c(breaks, lead(breaks) - 1, sep = "-") |> 
+  coalesce(str_c(breaks, "+")) |> 
+  str_c(" years old")
+
+break_make <- 
+  mutate(break_make,
+         category_label = break_levels[match(this_break, breaks)],
+         category_label = 
+           ordered(category_label) |> 
+           fct_inorder())
+
+break_make <- select(break_make, category, category_label)
+
+split[["age-five-year"]] <- 
+  left_join(split[["age-five-year"]], break_make, by = "category") |> 
+  select(-category) |> 
+  rename(category = category_label) |>
+  summarise(across(c(count, proportion), sum),
+            .by = c(-count, -proportion)) |> 
+  arrange(com, level, category)
+
+## quick plot
+
+quick_plot <- function(x){
+  filtered <-     
+    split[[x]] |>
+    filter(com == sample(com, 1))
+  
+  com_its <- unique(filtered$com)
+    
+  tibble_debug <<- filtered
+  
+  ggplot(
+    filtered,
+    aes(x = category, y = proportion, fill = level)) + 
+    geom_col(position = "dodge2", colour = "black") + 
+    ca_scale_fill_discrete() + 
+    scale_y_continuous(labels = percent) +
+    ggtitle(com_its) +
+    theme_minimal()
+
+}
+
+  quick_plot("age-five-year") +
+    scale_x_discrete(labels = \(x) str_replace(x, " ", "\n"))
+```
+
+### ethnic-group
+
+```{r ethnic-group}
+split[["ethnic-group"]] <-
+  mutate(split[["ethnic-group"]], 
+         category = 
+           case_when(
+             str_detect(category, "african")   ~ "African",
+             str_detect(category, "asian")     ~ "Asian",
+             str_detect(category, "caribbean") ~ "Carribean/Black",
+             str_detect(category, "mixed")     ~ "Mixed/multiple",
+             str_detect(category, "white")     ~ "White",
+             str_detect(category, "other")     ~ "Other",
+             .default = "OOPS\nBAD LEVEL"
+           ) |> 
+           ordered()) |> 
+    group_by(across(c(-proportion, -count))) |> 
+  summarise(across(c(count, proportion), sum), .groups = "drop")
+
+quick_plot("ethnic-group") +
+    scale_x_discrete(label = \(x) str_replace(x, "/", "\n"))
+```
+
+![](images/clipboard-1362719507.png)
+
+#### Harmonised ethnic-group
+
+```{r harmonisedethnic-group}
+
+capitalise <- function(x, start = 1, end = 1){
+  str_c(
+    str_sub(x, 0, start-1),
+    str_to_upper(str_sub(x, start, end)),
+    str_sub(x, end+1, -1)
+  )
+}
+# 
+# split[["ethnic-group-harmonised"]] <- 
+#   mutate(split[["ethnic-group-harmonised"]],
+#          category ==
+#            case_match(
+#              category,
+#              "african_caribbean_black" ~ "African/Carribean\nBlack") |>
+#            capitalise() |> 
+#            ordered()
+#          )
+# 
+# quick_plot("ethnic-group-harmonised")
+```
+
+### General health
+
+Okay currently Kildare is missing its stats - oh because there's no shapefile for Kildare CoM right now. Let's filter it out.
+
+```{r generalHealth}
+
+# split[["general-health"]] <- 
+#   filter(split[["general-health"]], category != "not_stated") |> 
+#   mutate(proportion = count/sum(count), .by = c(level, com))
+# 
+# split[["general-health"]] <- 
+#   mutate(
+#     split[["general-health"]],
+#     category = 
+#       str_replace(category, "_", " ") |> 
+#       capitalise() |> 
+#       ordered(levels = c("Very bad", "Bad", "Fair", "Good", "Very good"))
+#   )
+# 
+# 
+# quick_plot("general-health")
+```
+
+#### Household composition
+
+```{r householdComposition}
+# 
+# split[["household-composition"]] <-
+#   mutate(
+#     split[["household-composition"]],
+#     category = 
+#       case_match(
+#         category,
+#         
+#         "cohabiting_couple" ~ "Couple\n(no children)",
+#         "married_couple"    ~ "Couple\n(no children)",
+#         "couple_and_others" ~ "Couple\n(no children)",
+#         
+#         "cohabiting_couple_with_children" ~ "Couple w/\nchildren",
+#         "married_couple_with_children"   ~ "Couple w/\nchildren",
+#         "couple_with_children_and_others" ~ "Couple w/\nchildren",
+#         
+#         "one_parent_family_father_with_children" ~ "One parent\nfamily",
+#         "one_parent_family_mother_and_children" ~ "One parent\nfamily",
+#         "one_parent_family_mother_with_children_and_others" ~
+#           "One parent\nfamily",
+#         "one_parent_family_father_with_children_and_others" ~ 
+#           "One parent\nfamily",
+#         
+#         "one_person" ~ "One person",
+#         
+#         "two_or_more_family_units" ~ "Multiple\nfamilies",
+#         
+#         "two_or_more_non_related_persons" ~ "Non-family\nhouseholds",
+#         "non_family_households_and_relations" ~ "Non-family\nhouseholds",
+#         .default = category
+#         ) |> 
+#       factor()
+#   ) |> 
+#   summarise(across(c(count, proportion), sum),
+#             .by = c(-count, -proportion))
+#   
+#   table(split[["household-composition"]][["category"]])
+#   
+#   quick_plot("household-composition") +
+#     theme(axis.text.x = element_text(angle = 60, hjust = 1))
+#   
+# ### Make super-categories
+# 
+# split[["household-composition"]] <-
+#   mutate(
+#     split[["household-composition"]],
+#     super_category = 
+#       case_when(
+#         str_starts(category, "Lone occupant:") ~ "Lone occupant",
+#         str_detect(category, "dependent children") ~ 
+#           "Families w/\nDependent children",
+#         TRUE ~ "Other"
+#       ) |> 
+#       factor()
+#     )
+# 
+# ggplot(split[["household-composition"]] |> 
+#          filter(com == sample(com, 1)) |> 
+#          group_by(level, super_category) |> 
+#          summarise(proportion = sum(proportion)),
+#        aes(x = super_category, y = proportion, fill = level)) + 
+#   geom_col(position = "dodge2", colour = "black") + 
+#   ca_scale_fill_discrete() + 
+#   theme_minimal()
+# 
+# test <- 
+#   split[["household-composition"]] |> 
+#   mutate(
+#     adults = 
+#       case_when(
+#         str_starts(category, "Couple:") ~ "Couple", 
+#         str_starts(category, "Lone ")   ~ "Individual",
+#         TRUE                            ~ "Other"
+#       ),
+#     children = 
+#       case_when(
+#         str_detect(category, "dependent children") ~ "Dependent",
+#         str_detect(category, "all children non dependent") ~ "All non-dependent",
+#         TRUE                                               ~ "None")) |> 
+#   filter(str_starts(category, "Couple") | str_starts(category, "Lone")) |> 
+#   select(-category, -super_category)
+# 
+# test <- 
+#   group_by(test, across(c(-proportion, -count))) |> 
+#   summarise(across(c(count, proportion), sum), .groups = "drop") 
+# 
+# ggplot(test |> 
+#          filter(com == sample(com, 1)), 
+#        aes(x = children, y = adults, fill = proportion)) + 
+#   
+#   geom_tile(colour = "black") +
+#   geom_text(aes(label = percent(proportion, 1))) +
+#   
+#   
+#   scale_fill_gradient(low = "white",
+#                       high = ca_orange(),
+#                       limits = c(0, NA)) +
+#   scale_x_discrete(labels = \(x) str_replace(x, "-", "-\n")) + 
+#   coord_fixed() +
+#   theme_bw() + 
+#   facet_wrap(~ level, dir = "h")
+# 
+# test_2 <-
+#   select(test, -count) |> 
+#   pivot_wider(names_from = level,
+#               values_from = proportion,
+#               names_prefix = "prop_",
+#               names_repair = "minimal") |> 
+#   mutate(difference = `prop_centre-of-mission` - prop_nation)
+# 
+# ggplot(test_2 |> 
+#          filter(com == sample(com, 1)), 
+#        aes(x = children, y = adults, fill = difference)) + 
+#   
+#   geom_tile(colour = "black") +
+#   geom_text(aes(label = percent(difference, 0.1))) +
+#   
+#   
+#   scale_fill_gradient2(low = ca_cyan(),
+#                        mid = "white",
+#                        high = ca_green(),
+#                        midpoint = 0,
+#                        name = "Difference",
+#                        labels = percent,
+#                        limits = c(-0.35, 0.35)) +
+#   
+#   scale_x_discrete(labels = \(x) str_replace(x, "-", "-\n")) + 
+#   
+#   coord_fixed() +
+#   theme_bw()
+  
+```
+
+#### Religion
+
+```{r formatReligion}
+split[["religion"]] <- 
+  mutate(split[["religion"]],
+         category =
+           str_replace_all(category, "_", "\n") |>
+           capitalise() |> 
+           factor())
+
+quick_plot("religion")
+```
+
+## Save Data
+
+```{r save_data}
+saveRDS(split, here("data", "scotland_split-formatted.RDS"))
+```
