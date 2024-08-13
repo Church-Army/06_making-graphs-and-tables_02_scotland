@@ -19,6 +19,7 @@ library(stringr)
 library(tibble)
 library(tidyr)
 library(rlang)
+library(forcats)
 
 library(lobstr)
 ```
@@ -110,9 +111,13 @@ kable(ethnicity[[1]])
 ```{r religion_table}
 split$religion <- map(split$religion,
                       \(x){
-                        str_replace(x, "catholic", "Catholic") |> 
-                          str_replace("christian", "Christian") |> 
-                          str_replace("scotland", "Scotland")})
+                        mutate(x, category = 
+                                 fct_relabel(
+                                   category,
+                                   \(y){
+                                     str_replace(y, "catholic", "Catholic") |>
+                                       str_replace("christian", "Christian") |>
+                                       str_replace("scotland", "Scotland")}))})
 
 religion <- map(split[["religion"]], try_table)
 kable(religion[[1]])
@@ -154,4 +159,3 @@ tree(tables, max_depth = 2)
 
 saveRDS(tables, here("data", "tables.RDS"))
 ```
-
